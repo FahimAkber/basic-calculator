@@ -1,0 +1,127 @@
+name: Basic Calculator CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # 1. Build, tests, coverage, SonarQube, dependency CVEs
+  java-quality:
+    name: Build, Test & Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Make Maven Wrapper executable
+        run: chmod +x ./mvnw
+
+      - name: Build, test and generate coverage
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify
+
+      - name: Run OWASP Dependency-Check
+        run: >
+          ./mvnw --batch-mode --no-transfer-progress
+          org.owasp:dependency-check-maven:check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
+      - name: SonarQube analysis
+        run: >
+          ./mvnw --batch-mode --no-transfer-progress
+          org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+          -Dsonar.host.url=${{ vars.SONAR_HOST_URL }}
+          -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Upload test and analysis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-ci-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            target/site/jacoco/
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # 2. Secret scanning
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout full repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for leaked secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 3. Shell script checks
+  shell-analysis:
+    name: Shell Script Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r -d '' file; do
+            echo "Checking syntax: $file"
+            bash -n "$file"
+          done < <(find . -type f -name "*.sh" \
+            -not -path "./.git/*" -print0)
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r -d '' file; do
+            echo "ShellCheck: $file"
+            shellcheck "$file"
+          done < <(find . -type f -name "*.sh" \
+            -not -path "./.git/*" -print0)
