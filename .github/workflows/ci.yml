@@ -45,8 +45,6 @@ jobs:
         run: >
           ./mvnw --batch-mode --no-transfer-progress
           org.owasp:dependency-check-maven:check
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
       - name: SonarQube analysis
         run: >
